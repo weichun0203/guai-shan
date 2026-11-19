@@ -246,6 +246,7 @@
             <p id="scanStatus" class="text-sm text-gray-500 text-center">正在開啟相機...</p>
             <p id="scanRaw" onclick="if (this.textContent) useScanText(this.textContent)" title="點一下直接填入搜尋欄" class="text-center font-mono text-lg font-bold text-heritage-blue tracking-widest min-h-[1.75rem] mt-1 cursor-pointer"></p>
             <div id="scanResults" class="space-y-2 mt-2"></div>
+            <div id="aiResult" class="hidden mt-3 bg-white border-2 border-sage-green rounded-xl px-4 py-3 shadow-sm"></div>
             <button id="aiScanBtn" onclick="aiScanNow()" class="hidden w-full mt-4 items-center justify-center gap-2 bg-sage-green hover:bg-sage-dark text-white px-4 py-3 rounded-lg shadow-md font-medium tracking-wide">
                 <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/><path d="M19 17l.8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8z"/></svg>
                 讀不準？用 AI 辨識
@@ -975,6 +976,8 @@
             scanner.readings = [];
             scanner.exactHits = {};
             scanner.lastRenderKey = '';
+            scanner.aiPlates = [];
+            document.getElementById('aiResult').classList.add('hidden');
             const aiBtn = document.getElementById('aiScanBtn');
             aiBtn.classList.toggle('hidden', !PLATE_AI_URL);
             aiBtn.classList.toggle('flex', !!PLATE_AI_URL);
@@ -1052,23 +1055,48 @@
             return (json.plates || []).map(p => String(p).toUpperCase().trim()).filter(p => normalizePlate(p).length >= 4);
         }
 
-        // 從 AI 回傳的多個車牌中，挑資料庫最相符的一個，直接填入搜尋欄並關閉掃描
-        // 回傳 true 表示已帶入結果
+        // AI 結果顯示在獨立區塊，不影響即時掃描；按「填入」才帶入搜尋欄
+        function showAIBox(html) {
+            const box = document.getElementById('aiResult');
+            box.innerHTML = html;
+            box.classList.remove('hidden');
+        }
+
         function handleAIPlates(plates, emptyMsg) {
             if (!plates.length) {
-                renderScanResults('', []);
-                setScanStatus(emptyMsg);
-                return false;
+                scanner.aiPlates = [];
+                showAIBox(`<p class="text-sm text-gray-500 text-center">🤖 ${escapeHtml(emptyMsg)}</p>`);
+                return;
             }
-            let best = plates[0], bestMatch = null;
-            plates.forEach(p => {
+            // 每個 AI 讀到的號碼對照資料庫；完全相符時用資料庫的寫法
+            scanner.aiPlates = plates.slice(0, 3).map(p => {
                 const m = matchPlates(p)[0];
-                if (m && (!bestMatch || m.score > bestMatch.score)) { best = p; bestMatch = m; }
+                return { text: m && m.score === 1 ? m.plate : p, match: m };
             });
-            // 完全相符時用資料庫的寫法，否則用 AI 讀到的號碼
-            const plate = bestMatch && bestMatch.score === 1 ? bestMatch.plate : best;
-            scanner.done = true;
-            if (navigator.vibrate) navigator.vibrate(120);
+            if (navigator.vibrate) navigator.vibrate(80);
+            showAIBox(`
+                <p class="text-xs font-bold text-sage-dark tracking-wider mb-2">🤖 AI 辨識結果</p>
+                ${scanner.aiPlates.map((a, idx) => {
+                    const m = a.match;
+                    const info = !m ? '<span class="text-gray-400">資料庫查無此車牌</span>'
+                        : (m.score === 1 ? '' : `可能是 ${escapeHtml(m.plate)}（相似 ${Math.round(m.score * 100)}%）：`)
+                          + m.items.map(i => escapeHtml(i.name) + '（' + escapeHtml(i.branch) + '）').join('、');
+                    return `
+                    <div class="flex items-center justify-between gap-3 ${idx ? 'border-t border-gray-100 pt-2 mt-2' : ''}">
+                        <div class="min-w-0">
+                            <div class="font-mono font-bold text-xl text-heritage-blue tracking-widest">${escapeHtml(a.text)}</div>
+                            <div class="text-sm text-gray-600 truncate">${info}</div>
+                        </div>
+                        <button onclick="fillFromAI(${idx})" class="shrink-0 bg-sage-green hover:bg-sage-dark text-white px-4 py-2 rounded-lg shadow-sm font-medium">填入</button>
+                    </div>`;
+                }).join('')}`);
+        }
+
+        function fillFromAI(idx) {
+            const a = scanner.aiPlates[idx];
+            if (!a) return;
+            // 相似但不完全相符時，以資料庫的車牌為準，方便直接查到車主
+            const plate = a.match && a.match.score < 1 ? a.match.plate : a.text;
             closeScanner();
             const input = document.getElementById('searchInput');
             input.value = plate;
@@ -1076,7 +1104,6 @@
             const owner = carData.find(i => normalizePlate(i.plate) === normalizePlate(plate));
             showToast(owner ? `🚗 找到車主：${escapeHtml(owner.name)}` : `已填入 ${escapeHtml(plate)}，資料庫查無此車牌`, owner ? 'success' : 'info');
             input.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            return true;
         }
 
         function pauseLiveScan() {
@@ -1097,23 +1124,24 @@
             }, delay);
         }
 
+        // AI 辨識時即時掃描照常進行，兩邊各自顯示
         async function aiScanNow() {
             const btn = document.getElementById('aiScanBtn');
             const canvas = frameForAI();
-            if (!canvas) { setScanStatus('相機尚未就緒，請稍候或改用「拍照 / 選相片」', true); return; }
-            const wasRunning = pauseLiveScan();
+            if (!canvas) { showAIBox('<p class="text-sm text-red-500 text-center">相機尚未就緒，請稍候或改用「拍照 / 選相片」</p>'); return; }
             btn.disabled = true;
             btn.classList.add('opacity-60');
-            setScanStatus('AI 辨識中...');
+            showAIBox('<p class="text-sm text-gray-500 text-center">🤖 AI 辨識中...</p>');
             try {
-                handleAIPlates(await recognizeWithAI(canvas), 'AI 沒看到車牌，請靠近一點再試');
+                const plates = await recognizeWithAI(canvas);
+                if (document.getElementById('scanModal').classList.contains('hidden')) return; // 已關閉
+                handleAIPlates(plates, 'AI 沒看到車牌，請靠近一點再試');
             } catch (err) {
                 console.error('AI error:', err);
-                setScanStatus('AI 辨識失敗：' + err.message, true);
+                showAIBox(`<p class="text-sm text-red-500 text-center">AI 辨識失敗：${escapeHtml(err.message)}</p>`);
             } finally {
                 btn.disabled = false;
                 btn.classList.remove('opacity-60');
-                resumeLiveScan(wasRunning);
             }
         }
 
@@ -1123,6 +1151,7 @@
             e.target.value = '';
             if (!file) return;
             const wasRunning = pauseLiveScan();
+            let resumeDelay = 3000;
             setScanStatus('正在辨識相片...');
             try {
                 const img = await new Promise((resolve, reject) => {
@@ -1142,8 +1171,10 @@
 
                 if (PLATE_AI_URL) {
                     try {
-                        setScanStatus('AI 辨識相片中...');
+                        setScanStatus('對準車牌中...');
+                        showAIBox('<p class="text-sm text-gray-500 text-center">🤖 AI 辨識相片中...</p>');
                         handleAIPlates(await recognizeWithAI(canvas), '相片中找不到車牌，請靠近一點、讓車牌清楚入鏡後重拍');
+                        resumeDelay = 0; // AI 結果在獨立區塊，即時掃描馬上恢復
                         return;
                     } catch (err) {
                         console.warn('AI 失敗，改用本機辨識', err);
@@ -1170,7 +1201,7 @@
                 console.error('Photo OCR error:', err);
                 setScanStatus('相片辨識失敗，請重試', true);
             } finally {
-                resumeLiveScan(wasRunning);
+                resumeLiveScan(wasRunning, resumeDelay);
             }
         });
 
