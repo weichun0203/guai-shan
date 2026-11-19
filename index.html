@@ -244,7 +244,7 @@
         </div>
         <div class="bg-paper-white rounded-t-2xl -mt-4 relative px-5 pt-4 pb-6 max-h-[48%] overflow-y-auto">
             <p id="scanStatus" class="text-sm text-gray-500 text-center">正在開啟相機...</p>
-            <p id="scanRaw" class="text-center font-mono text-lg font-bold text-heritage-blue tracking-widest min-h-[1.75rem] mt-1"></p>
+            <p id="scanRaw" onclick="if (this.textContent) useScanText(this.textContent)" title="點一下直接填入搜尋欄" class="text-center font-mono text-lg font-bold text-heritage-blue tracking-widest min-h-[1.75rem] mt-1 cursor-pointer"></p>
             <div id="scanResults" class="space-y-2 mt-2"></div>
             <button id="aiScanBtn" onclick="aiScanNow()" class="hidden w-full mt-4 items-center justify-center gap-2 bg-sage-green hover:bg-sage-dark text-white px-4 py-3 rounded-lg shadow-md font-medium tracking-wide">
                 <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/><path d="M19 17l.8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8z"/></svg>
@@ -637,6 +637,7 @@
         const CONFUSABLE = { O: '0', D: '0', Q: '0', I: '1', L: '1', Z: '2', S: '5', B: '8', G: '6' };
 
         const DESKEW_ANGLES = [0, -0.07, 0.07, -0.14, 0.14]; // 約 0°、±4°、±8°
+        const LIVE_SCAN_INTERVAL = 500; // 即時掃描每次間隔（毫秒），調大可減少畫面跳動
         const scanner = { stream: null, worker: null, workerPromise: null, running: false, timer: null, done: false, frame: 0, misses: 0, lastMatches: [], readings: [], exactHits: {} };
 
         // AI 辨識（Google Gemini，經由獨立的 Apps Script 轉送；金鑰只存在 GAS 端）
@@ -881,6 +882,7 @@
             const norm = normalizePlate(rawText);
             if (norm.length < 4) {
                 if (!opts.single) { scanner.readings = []; scanner.exactHits = {}; }
+                scanner.lastRenderKey = '';
                 renderScanResults('', []);
                 return;
             }
@@ -892,7 +894,12 @@
             }
             const display = correctByFormat(best);
             const matches = mergeMatches([matchPlates(norm), matchPlates(best), matchPlates(display)]);
-            renderScanResults(display, matches);
+            // 結果沒變就不重畫，避免畫面一直跳
+            const renderKey = display + '|' + matches.map(m => m.plate + m.score).join(',');
+            if (renderKey !== scanner.lastRenderKey) {
+                scanner.lastRenderKey = renderKey;
+                renderScanResults(display, matches);
+            }
 
             // 完全相符且只有一台 → 自動帶入（即時掃描需連續 2 次相符，避免誤判）
             const exact = matches.filter(m => m.score === 1);
@@ -947,7 +954,7 @@
                 setScanStatus('辨識引擎載入失敗，請確認網路連線後重試', true);
                 return;
             }
-            scanner.timer = setTimeout(scanLoop, 120);
+            scanner.timer = setTimeout(scanLoop, LIVE_SCAN_INTERVAL);
         }
 
         async function openScanner() {
@@ -967,6 +974,7 @@
             scanner.misses = 0;
             scanner.readings = [];
             scanner.exactHits = {};
+            scanner.lastRenderKey = '';
             const aiBtn = document.getElementById('aiScanBtn');
             aiBtn.classList.toggle('hidden', !PLATE_AI_URL);
             aiBtn.classList.toggle('flex', !!PLATE_AI_URL);
@@ -1044,21 +1052,31 @@
             return (json.plates || []).map(p => String(p).toUpperCase().trim()).filter(p => normalizePlate(p).length >= 4);
         }
 
-        // 從 AI 回傳的多個車牌中，挑資料庫最相符的一個
+        // 從 AI 回傳的多個車牌中，挑資料庫最相符的一個，直接填入搜尋欄並關閉掃描
+        // 回傳 true 表示已帶入結果
         function handleAIPlates(plates, emptyMsg) {
             if (!plates.length) {
                 renderScanResults('', []);
                 setScanStatus(emptyMsg);
-                return;
+                return false;
             }
-            let best = plates[0], bestScore = -1;
+            let best = plates[0], bestMatch = null;
             plates.forEach(p => {
-                const m = matchPlates(p);
-                const score = m.length ? m[0].score : 0;
-                if (score > bestScore) { best = p; bestScore = score; }
+                const m = matchPlates(p)[0];
+                if (m && (!bestMatch || m.score > bestMatch.score)) { best = p; bestMatch = m; }
             });
-            scanner.done = false;
-            handleOcrText(best, { single: true });
+            // 完全相符時用資料庫的寫法，否則用 AI 讀到的號碼
+            const plate = bestMatch && bestMatch.score === 1 ? bestMatch.plate : best;
+            scanner.done = true;
+            if (navigator.vibrate) navigator.vibrate(120);
+            closeScanner();
+            const input = document.getElementById('searchInput');
+            input.value = plate;
+            render();
+            const owner = carData.find(i => normalizePlate(i.plate) === normalizePlate(plate));
+            showToast(owner ? `🚗 找到車主：${escapeHtml(owner.name)}` : `已填入 ${escapeHtml(plate)}，資料庫查無此車牌`, owner ? 'success' : 'info');
+            input.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return true;
         }
 
         function pauseLiveScan() {
@@ -1067,11 +1085,16 @@
             clearTimeout(scanner.timer);
             return wasRunning;
         }
-        function resumeLiveScan(wasRunning) {
-            if (wasRunning && scanner.stream && !scanner.done && !document.getElementById('scanModal').classList.contains('hidden')) {
-                scanner.running = true;
-                scanLoop();
-            }
+        // delay：先讓使用者看清楚訊息，再恢復即時掃描
+        function resumeLiveScan(wasRunning, delay = 3000) {
+            if (!wasRunning) return;
+            clearTimeout(scanner.timer);
+            scanner.timer = setTimeout(() => {
+                if (scanner.stream && !scanner.done && !scanner.running && !document.getElementById('scanModal').classList.contains('hidden')) {
+                    scanner.running = true;
+                    scanLoop();
+                }
+            }, delay);
         }
 
         async function aiScanNow() {
