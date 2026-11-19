@@ -65,6 +65,36 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+
+        /* 車牌掃描畫面 */
+        #scanGuide {
+            position: absolute;
+            left: 50%;
+            top: 42%;
+            width: 84%;
+            max-width: 460px;
+            aspect-ratio: 2.3 / 1;
+            transform: translate(-50%, -50%);
+            border: 3px solid rgba(255,255,255,0.9);
+            border-radius: 12px;
+            box-shadow: 0 0 0 9999px rgba(0,0,0,0.45);
+            transition: border-color 0.2s;
+        }
+        #scanGuide.found { border-color: #6b9080; }
+        #scanGuide::after {
+            content: "";
+            position: absolute;
+            left: 6%;
+            right: 6%;
+            height: 2px;
+            background: rgba(107,144,128,0.9);
+            box-shadow: 0 0 8px rgba(107,144,128,0.9);
+            animation: scanline 1.8s ease-in-out infinite;
+        }
+        @keyframes scanline {
+            0%, 100% { top: 12%; }
+            50% { top: 86%; }
+        }
     </style>
 </head>
 <body class="text-slate-800 min-h-screen pb-24 relative">
@@ -110,7 +140,11 @@
             </div>
 
             <!-- 按鈕區 -->
-            <div class="flex gap-2 w-full md:w-auto">
+            <div class="flex flex-wrap md:flex-nowrap gap-2 w-full md:w-auto">
+                <button onclick="openScanner()" title="用相機掃描車牌" class="basis-full md:basis-auto whitespace-nowrap flex items-center justify-center gap-2 bg-heritage-blue hover:opacity-90 text-white px-5 py-3 rounded-lg shadow-md transition font-medium tracking-wide">
+                    <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                    掃描車牌
+                </button>
                 <button onclick="openModal()" class="flex-1 md:flex-none flex items-center justify-center gap-2 bg-sage-green hover:bg-sage-dark text-white px-6 py-3 rounded-lg shadow-md transition-colors font-medium tracking-wide">
                     <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     新增
@@ -190,6 +224,35 @@
                         <button type="submit" class="px-5 py-2.5 bg-sage-green text-white rounded-lg hover:bg-sage-dark shadow-md transition font-medium">儲存資料</button>
                     </div>
                 </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 車牌掃描視窗 -->
+    <div id="scanModal" class="fixed inset-0 z-[60] bg-black hidden flex-col">
+        <div id="scanViewport" class="relative flex-1 overflow-hidden">
+            <video id="scanVideo" playsinline muted autoplay class="absolute inset-0 w-full h-full object-cover"></video>
+            <div id="scanGuide">
+                <p class="absolute left-1/2 -translate-x-1/2 whitespace-nowrap text-white text-sm tracking-wide" style="top: calc(100% + 12px);">請將車牌對準框內，保持穩定</p>
+            </div>
+            <div class="absolute top-0 inset-x-0 flex items-center justify-between px-4 py-3 bg-gradient-to-b from-black/60 to-transparent text-white">
+                <span class="font-bold tracking-widest">掃描車牌</span>
+                <button onclick="closeScanner()" title="關閉" class="p-2 rounded-full hover:bg-white/10">
+                    <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+        </div>
+        <div class="bg-paper-white rounded-t-2xl -mt-4 relative px-5 pt-4 pb-6 max-h-[48%] overflow-y-auto">
+            <p id="scanStatus" class="text-sm text-gray-500 text-center">正在開啟相機...</p>
+            <p id="scanRaw" class="text-center font-mono text-lg font-bold text-heritage-blue tracking-widest min-h-[1.75rem] mt-1"></p>
+            <div id="scanResults" class="space-y-2 mt-2"></div>
+            <div class="flex gap-2 mt-4">
+                <label class="flex-1 flex items-center justify-center gap-2 bg-white border border-gray-200 text-heritage-blue px-4 py-3 rounded-lg shadow-sm font-medium cursor-pointer">
+                    <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                    拍照 / 選相片
+                    <input id="scanFile" type="file" accept="image/*" capture="environment" class="hidden">
+                </label>
+                <button onclick="closeScanner(); document.getElementById('searchInput').focus();" class="flex-1 bg-gray-100 text-gray-600 px-4 py-3 rounded-lg font-medium">手動輸入</button>
             </div>
         </div>
     </div>
@@ -405,9 +468,12 @@
                 return;
             }
 
-            const filtered = carData.filter(item => 
+            // 車牌比對忽略「-」與空白，輸入 ABC1234 也能找到 ABC-1234
+            const plateTerm = searchTerm.replace(/[^a-z0-9]/g, '');
+            const filtered = carData.filter(item =>
                 (item.name || "").toLowerCase().includes(searchTerm) ||
                 (item.plate || "").toLowerCase().includes(searchTerm) ||
+                (plateTerm.length >= 2 && (item.plate || "").toLowerCase().replace(/[^a-z0-9]/g, '').includes(plateTerm)) ||
                 (item.branch || "").includes(searchTerm) ||
                 (item.contact || "").includes(searchTerm) ||
                 (item.appearance || "").includes(searchTerm)
@@ -556,6 +622,362 @@
             modal.classList.add('opacity-0', 'pointer-events-none');
             document.body.classList.remove('modal-active');
         }
+
+        // ============================================
+        // 車牌辨識（相機 + Tesseract.js OCR，全部在手機端執行）
+        // ============================================
+        const TESSERACT_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+        // 台灣車牌不使用 I、O，排除可減少誤判
+        const PLATE_WHITELIST = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
+        // 易混淆字元歸一化：比對時視為相同
+        const CONFUSABLE = { O: '0', D: '0', Q: '0', I: '1', L: '1', Z: '2', S: '5', B: '8', G: '6' };
+
+        const DESKEW_ANGLES = [0, -0.07, 0.07, -0.14, 0.14]; // 約 0°、±4°、±8°
+        const scanner = { stream: null, worker: null, workerPromise: null, running: false, timer: null, done: false, frame: 0, misses: 0, lastMatches: [] };
+
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+
+        function setScanStatus(msg, isError = false) {
+            const el = document.getElementById('scanStatus');
+            el.textContent = msg;
+            el.className = `text-sm text-center ${isError ? 'text-red-500' : 'text-gray-500'}`;
+        }
+
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                if (window.Tesseract) return resolve();
+                const s = document.createElement('script');
+                s.src = src;
+                s.onload = resolve;
+                s.onerror = () => reject(new Error('無法載入辨識引擎'));
+                document.head.appendChild(s);
+            });
+        }
+
+        function getOcrWorker() {
+            if (scanner.worker) return Promise.resolve(scanner.worker);
+            if (!scanner.workerPromise) {
+                scanner.workerPromise = (async () => {
+                    setScanStatus('正在載入辨識引擎（第一次約需數秒）...');
+                    await loadScript(TESSERACT_SRC);
+                    const worker = await Tesseract.createWorker('eng', 1, {
+                        logger: m => {
+                            if (m.status === 'loading language traineddata' && m.progress < 1) {
+                                setScanStatus(`正在下載辨識資料 ${Math.round(m.progress * 100)}%`);
+                            }
+                        }
+                    });
+                    await worker.setParameters({
+                        tessedit_char_whitelist: PLATE_WHITELIST,
+                        tessedit_pageseg_mode: '7' // 單行文字
+                    });
+                    scanner.worker = worker;
+                    return worker;
+                })().catch(err => {
+                    scanner.workerPromise = null;
+                    throw err;
+                });
+            }
+            return scanner.workerPromise;
+        }
+
+        function normalizePlate(s) {
+            return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        }
+        function canonicalPlate(s) {
+            return normalizePlate(s).replace(/[A-Z]/g, c => CONFUSABLE[c] || c);
+        }
+
+        // 模糊子字串距離：pattern 與 text 中任一段落的最小編輯距離
+        function fuzzySubstringDistance(pattern, text) {
+            const m = pattern.length, n = text.length;
+            let prev = new Array(n + 1).fill(0);
+            for (let i = 1; i <= m; i++) {
+                const cur = [i];
+                for (let j = 1; j <= n; j++) {
+                    cur[j] = Math.min(
+                        prev[j] + 1,
+                        cur[j - 1] + 1,
+                        prev[j - 1] + (pattern[i - 1] === text[j - 1] ? 0 : 1)
+                    );
+                }
+                prev = cur;
+            }
+            return Math.min(...prev);
+        }
+
+        // 用辨識文字比對資料庫，回傳依分數排序的候選
+        function matchPlates(ocrText) {
+            const t = canonicalPlate(ocrText);
+            if (t.length < 4) return [];
+            const seen = new Map();
+            carData.forEach(item => {
+                const p = canonicalPlate(item.plate);
+                if (p.length < 4) return;
+                const dist = fuzzySubstringDistance(p, t);
+                const maxDist = p.length >= 6 ? 2 : 1;
+                if (dist > maxDist) return;
+                const score = 1 - dist / p.length;
+                const key = normalizePlate(item.plate);
+                const prevHit = seen.get(key);
+                if (!prevHit || prevHit.score < score) seen.set(key, { plate: item.plate, score, items: [] });
+                seen.get(key).items.push(item);
+            });
+            return [...seen.values()].sort((a, b) => b.score - a.score).slice(0, 4);
+        }
+
+        // 從影片擷取「掃描框」範圍並做灰階 + 對比強化
+        // angle：每一幀輪流微調角度（弧度），補償手機或車牌歪斜
+        function grabGuideFrame(angle = 0) {
+            const video = document.getElementById('scanVideo');
+            if (!video.videoWidth) return null;
+            const vr = video.getBoundingClientRect();
+            const gr = document.getElementById('scanGuide').getBoundingClientRect();
+            const scale = Math.max(vr.width / video.videoWidth, vr.height / video.videoHeight); // object-cover
+            const offX = (vr.width - video.videoWidth * scale) / 2;
+            const offY = (vr.height - video.videoHeight * scale) / 2;
+            let sx = (gr.left - vr.left - offX) / scale;
+            let sy = (gr.top - vr.top - offY) / scale;
+            let sw = gr.width / scale, sh = gr.height / scale;
+            sx = Math.max(0, sx); sy = Math.max(0, sy);
+            sw = Math.min(sw, video.videoWidth - sx); sh = Math.min(sh, video.videoHeight - sy);
+            if (sw < 10 || sh < 10) return null;
+
+            const targetH = 180;
+            const k = targetH / sh;
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(sw * k);
+            canvas.height = targetH;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.fillStyle = '#888';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate(angle);
+            ctx.drawImage(video, sx, sy, sw, sh, -canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            enhanceContrast(ctx, canvas.width, canvas.height);
+            return canvas;
+        }
+
+        function enhanceContrast(ctx, w, h) {
+            const img = ctx.getImageData(0, 0, w, h);
+            const d = img.data;
+            const hist = new Uint32Array(256);
+            for (let i = 0; i < d.length; i += 4) {
+                const g = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0;
+                d[i] = g;
+                hist[g]++;
+            }
+            // 取 2% / 98% 百分位做對比拉伸
+            const total = w * h;
+            let lo = 0, hi = 255, acc = 0;
+            for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= total * 0.02) { lo = v; break; } }
+            acc = 0;
+            for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= total * 0.02) { hi = v; break; } }
+            const range = Math.max(1, hi - lo);
+            for (let i = 0; i < d.length; i += 4) {
+                const g = Math.max(0, Math.min(255, ((d[i] - lo) * 255 / range) | 0));
+                d[i] = d[i + 1] = d[i + 2] = g;
+            }
+            ctx.putImageData(img, 0, 0);
+        }
+
+        function renderScanResults(rawText, matches) {
+            const rawEl = document.getElementById('scanRaw');
+            const box = document.getElementById('scanResults');
+            const shown = normalizePlate(rawText);
+            rawEl.textContent = shown.length >= 4 ? shown : '';
+
+            if (shown.length < 4) {
+                setScanStatus('對準車牌中...');
+                box.innerHTML = '';
+                return;
+            }
+            if (matches.length === 0) {
+                setScanStatus('資料庫中暫無相符車牌，請調整角度或距離');
+                box.innerHTML = `
+                    <button onclick="useScanText('${escapeHtml(shown)}')" class="w-full text-sm text-heritage-blue underline py-1">以「${escapeHtml(shown)}」直接搜尋</button>`;
+                return;
+            }
+            setScanStatus('找到可能的車輛，點選確認：');
+            scanner.lastMatches = matches;
+            box.innerHTML = matches.map((m, idx) => `
+                <button onclick="confirmScanPlate(scanner.lastMatches[${idx}].plate)" class="w-full flex items-center justify-between bg-white border ${m.score === 1 ? 'border-sage-green' : 'border-gray-200'} rounded-lg px-4 py-3 shadow-sm text-left">
+                    <span>
+                        <span class="font-mono font-bold text-lg text-heritage-blue tracking-widest">${escapeHtml(m.plate)}</span>
+                        <span class="block text-sm text-gray-600">${m.items.map(i => escapeHtml(i.name) + '（' + escapeHtml(i.branch) + '）').join('、')}</span>
+                    </span>
+                    <span class="text-xs ${m.score === 1 ? 'text-sage-green' : 'text-gray-400'} font-medium">${m.score === 1 ? '完全相符' : '相似 ' + Math.round(m.score * 100) + '%'}</span>
+                </button>`).join('');
+        }
+
+        function handleOcrText(rawText) {
+            const matches = matchPlates(rawText);
+            renderScanResults(rawText, matches);
+            // 完全相符且只有一台 → 自動帶入結果
+            const exact = matches.filter(m => m.score === 1);
+            if (exact.length === 1 && !scanner.done) {
+                scanner.done = true;
+                document.getElementById('scanGuide').classList.add('found');
+                if (navigator.vibrate) navigator.vibrate(120);
+                setTimeout(() => confirmScanPlate(exact[0].plate), 500);
+            }
+        }
+
+        function confirmScanPlate(plate) {
+            closeScanner();
+            const input = document.getElementById('searchInput');
+            input.value = plate;
+            render();
+            const first = carData.find(i => normalizePlate(i.plate) === normalizePlate(plate));
+            showToast(first ? `🚗 找到車主：${escapeHtml(first.name)}` : '已帶入車牌', 'success');
+            document.getElementById('cardContainer').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function useScanText(text) {
+            closeScanner();
+            document.getElementById('searchInput').value = text;
+            render();
+        }
+
+        async function scanLoop() {
+            if (!scanner.running || scanner.done) return;
+            try {
+                const worker = await getOcrWorker();
+                if (!scanner.running || scanner.done) return;
+                const angle = DESKEW_ANGLES[scanner.frame++ % DESKEW_ANGLES.length];
+                const canvas = grabGuideFrame(angle);
+                if (canvas) {
+                    const { data } = await worker.recognize(canvas);
+                    if (!scanner.running || scanner.done) return;
+                    if (normalizePlate(data.text).length >= 4) {
+                        scanner.misses = 0;
+                        handleOcrText(data.text);
+                    } else if (++scanner.misses >= DESKEW_ANGLES.length * 2) {
+                        // 連續多幀都讀不到才清空畫面，避免結果閃爍
+                        handleOcrText('');
+                    }
+                }
+            } catch (err) {
+                console.error('OCR error:', err);
+                setScanStatus('辨識引擎載入失敗，請確認網路連線後重試', true);
+                return;
+            }
+            scanner.timer = setTimeout(scanLoop, 120);
+        }
+
+        async function openScanner() {
+            if (carData.length === 0) {
+                showToast('資料尚未載入完成，請稍候', 'info');
+            }
+            const modalEl = document.getElementById('scanModal');
+            modalEl.classList.remove('hidden');
+            modalEl.classList.add('flex');
+            document.body.style.overflow = 'hidden';
+            document.getElementById('scanGuide').classList.remove('found');
+            document.getElementById('scanRaw').textContent = '';
+            document.getElementById('scanResults').innerHTML = '';
+            scanner.done = false;
+            scanner.running = true;
+            scanner.frame = 0;
+            scanner.misses = 0;
+
+            getOcrWorker().catch(() => {}); // 先在背景載入引擎
+
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                setScanStatus('此瀏覽器無法直接開啟相機，請改用下方「拍照 / 選相片」', true);
+                return;
+            }
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: false,
+                    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+                });
+                if (!scanner.running) { stream.getTracks().forEach(t => t.stop()); return; }
+                scanner.stream = stream;
+                const video = document.getElementById('scanVideo');
+                video.srcObject = stream;
+                await video.play().catch(() => {});
+                setScanStatus('對準車牌中...');
+                scanLoop();
+            } catch (err) {
+                console.error('Camera error:', err);
+                setScanStatus('無法開啟相機：請允許相機權限，或用 Safari / Chrome 開啟本頁。也可改用下方「拍照 / 選相片」', true);
+            }
+        }
+
+        function closeScanner() {
+            scanner.running = false;
+            clearTimeout(scanner.timer);
+            if (scanner.stream) {
+                scanner.stream.getTracks().forEach(t => t.stop());
+                scanner.stream = null;
+            }
+            document.getElementById('scanVideo').srcObject = null;
+            const modalEl = document.getElementById('scanModal');
+            modalEl.classList.add('hidden');
+            modalEl.classList.remove('flex');
+            document.body.style.overflow = '';
+        }
+
+        // 備援：拍照或從相簿選圖辨識（相機權限被擋時使用，例如部分 App 內建瀏覽器）
+        document.getElementById('scanFile').addEventListener('change', async (e) => {
+            const file = e.target.files && e.target.files[0];
+            e.target.value = '';
+            if (!file) return;
+            const wasRunning = scanner.running;
+            scanner.running = false; // 暫停即時掃描
+            clearTimeout(scanner.timer);
+            setScanStatus('正在辨識相片...');
+            try {
+                const worker = await getOcrWorker();
+                const img = await new Promise((resolve, reject) => {
+                    const im = new Image();
+                    im.onload = () => resolve(im);
+                    im.onerror = reject;
+                    im.src = URL.createObjectURL(file);
+                });
+                const maxSide = 1600;
+                const k = Math.min(1, maxSide / Math.max(img.width, img.height));
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.round(img.width * k);
+                canvas.height = Math.round(img.height * k);
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                URL.revokeObjectURL(img.src);
+                enhanceContrast(ctx, canvas.width, canvas.height);
+
+                await worker.setParameters({ tessedit_pageseg_mode: '11' }); // 整張相片：稀疏文字
+                const { data } = await worker.recognize(canvas);
+                await worker.setParameters({ tessedit_pageseg_mode: '7' });
+
+                // 逐行嘗試，取最佳結果
+                const lines = data.text.split(/\n+/).map(normalizePlate).filter(l => l.length >= 4);
+                let best = { text: normalizePlate(data.text), matches: matchPlates(data.text) };
+                lines.forEach(line => {
+                    const m = matchPlates(line);
+                    if (m.length && (!best.matches.length || m[0].score > best.matches[0].score)) best = { text: line, matches: m };
+                });
+                scanner.done = false;
+                handleOcrText(best.text);
+                if (!best.matches.length) setScanStatus('相片中找不到相符車牌，請靠近一點、讓車牌清楚入鏡後重拍');
+            } catch (err) {
+                console.error('Photo OCR error:', err);
+                setScanStatus('相片辨識失敗，請重試', true);
+            } finally {
+                if (wasRunning && scanner.stream && !scanner.done) {
+                    scanner.running = true;
+                    scanLoop();
+                }
+            }
+        });
+
+        // 切到背景時關閉相機
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && scanner.stream) closeScanner();
+        });
 
         // 啟動
         init();
